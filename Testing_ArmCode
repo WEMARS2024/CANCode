@@ -1,0 +1,106 @@
+#include <Arduino.h>
+#include <ESP32CAN.h>
+#include <CAN_config.h>
+#include <Wire.h>
+#include <I2Cdev.h>
+
+CAN_device_t CAN_cfg;               
+const int interval = 20;          
+const int rx_queue_size = 10;       
+bool btEnabled = 0;
+
+const int JOYSTICK_INPUTS_SIZE = 6;
+unsigned char joyStickInputs[JOYSTICK_INPUTS_SIZE] = {0};  
+
+CAN_frame_t tx_frame;
+unsigned long ulCurrentMicros;
+unsigned long ulPreviousMicros;
+unsigned long ul5mS = 0;
+
+void setup() {
+  Serial.begin(921600);
+  Serial.println("ESP32-CAN");
+  
+  CAN_cfg.speed = CAN_SPEED_1000KBPS;
+  CAN_cfg.tx_pin_id = (gpio_num_t)21;
+  CAN_cfg.rx_pin_id = (gpio_num_t)22;
+  CAN_cfg.rx_queue = xQueueCreate(rx_queue_size, sizeof(CAN_frame_t));
+  
+  ESP32Can.CANInit();
+  pinMode(2, OUTPUT);
+}
+
+void loop() {
+  ulCurrentMicros = micros();
+  if((ulCurrentMicros - ulPreviousMicros) >= 500) {
+    ulPreviousMicros = ulCurrentMicros;
+    ul5mS = ul5mS + 5;
+  }
+
+  while (Serial.available() > 0) {
+    char cIncomingByte = Serial.read();
+    
+    switch(cIncomingByte) {
+      case 'X':
+      case 'x': {
+        btEnabled = 1;
+        
+
+        while(Serial.available() < JOYSTICK_INPUTS_SIZE) {
+          delay(1); 
+          if(millis() % 1000 == 0) {  
+            Serial.println("Timeout waiting for joystick data");
+            return;
+          }
+        }
+        
+        // Read data into buffer first
+        for(int i = 0; i < JOYSTICK_INPUTS_SIZE; i++) {
+          int value = Serial.read();
+          if(value != -1) { 
+            joyStickInputs[i] = (unsigned char)value;
+          }
+        }
+
+        digitalWrite(2, HIGH);
+        
+        // Debug to check values
+        Serial.print("Received joystick values: ");
+        for(int i = 0; i < JOYSTICK_INPUTS_SIZE; i++) {
+          Serial.print(joyStickInputs[i]);
+          Serial.print(" ");
+        }
+        Serial.println();
+        
+        break;
+      }
+    }
+  }
+
+  if ((ul5mS % 500) == 0 && btEnabled) {
+    tx_frame.FIR.B.FF = CAN_frame_ext;
+    tx_frame.MsgID = 0x0C0C1801;
+    tx_frame.FIR.B.DLC = 6;
+
+
+    tx_frame.data.u8[0] = joyStickInputs[0];
+    tx_frame.data.u8[1] = joyStickInputs[1];
+    tx_frame.data.u8[2] = joyStickInputs[2];
+    tx_frame.data.u8[3] = joyStickInputs[3];
+    tx_frame.data.u8[4] = joyStickInputs[4];
+    tx_frame.data.u8[5] = joyStickInputs[5];
+
+    if(joyStickInputs[0] != 0) {
+      digitalWrite(2, LOW);
+    }
+
+    ESP32Can.CANWriteFrame(&tx_frame);
+    
+    Serial.print("Sending CAN frame with values: ");
+    for(int i = 0; i < 6; i++) {
+      Serial.print(tx_frame.data.u8[i]);
+      Serial.print(" ");
+    }
+    Serial.println();
+  }
+}
